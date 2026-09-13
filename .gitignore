@@ -1,0 +1,10 @@
+config.json
+service_account.json
+outputs/
+data/uploads/
+server.log
+server.err
+*.log
+__pycache__/
+*.pyc
+.venv/

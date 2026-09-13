@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DocuExtract — Invoice &amp; CNIC Data Extraction</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark">DE</span>
+        <span class="brand-text">
+          <strong>DocuExtract</strong>
+          <small>Invoice &amp; CNIC Data Extraction</small>
+        </span>
+      </a>
+      <nav class="site-nav">
+        <a href="#extract">Extract</a>
+        <a href="/download/csv">CSV</a>
+        <a href="/download/excel">Excel</a>
+      </nav>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="container">
+      <h1>Turn documents into clean, usable data</h1>
+      <p>
+        Upload an invoice or a CNIC card and get the customer's name, the date,
+        and key fields extracted automatically &mdash; written to Excel or Google
+        Sheets and returned as JSON or CSV. No manual data entry.
+      </p>
+      <div class="hero-steps">
+        <div class="step"><span>1</span> Upload documents</div>
+        <div class="step"><span>2</span> Automated OCR extraction</div>
+        <div class="step"><span>3</span> Excel / JSON / CSV output</div>
+      </div>
+    </div>
+  </section>
+
+  <main class="container">
+    <section class="card panel" id="extract">
+      <h2 class="panel-title">Upload documents</h2>
+      <form id="uploadForm">
+        <div class="drop-grid">
+          <label class="dropzone" id="dzInvoice">
+            <input type="file" name="invoice" accept="image/*,.pdf" multiple />
+            <span class="dz-icon">📄</span>
+            <span class="dz-title">Invoice</span>
+            <span class="dz-hint">PNG, JPG or PDF</span>
+          </label>
+          <label class="dropzone" id="dzCnic">
+            <input type="file" name="cnic" accept="image/*,.pdf" multiple />
+            <span class="dz-icon">🪪</span>
+            <span class="dz-title">CNIC Card</span>
+            <span class="dz-hint">PNG, JPG or PDF</span>
+          </label>
+        </div>
+
+        <div class="file-list" id="fileList"></div>
+
+        <div class="controls">
+          <button type="submit" id="extractBtn" class="btn primary">Extract Data</button>
+          <span class="spinner" id="spinner" hidden></span>
+          <span id="statusText" class="status"></span>
+        </div>
+      </form>
+    </section>
+
+    <section class="card panel" id="resultsCard" hidden>
+      <div class="results-header">
+        <h2 class="panel-title">Extracted records</h2>
+        <div class="btn-group">
+          <a class="btn" href="/download/csv">Download CSV</a>
+          <a class="btn" href="/download/excel">Download Excel</a>
+          <button class="btn" id="copyJsonBtn">Copy JSON</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="resultsTable">
+          <thead>
+            <tr>
+              <th>File</th>
+              <th>Type</th>
+              <th>Name</th>
+              <th>Date</th>
+              <th>Normalized</th>
+              <th>Engine</th>
+              <th>Confidence</th>
+              <th>Extra Fields</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <details>
+        <summary>Raw JSON response</summary>
+        <pre id="rawJson"></pre>
+      </details>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>DocuExtract &middot; Automated OCR data extraction for invoices and CNIC cards.</p>
+      <p>
+        API: <code>POST /api/extract</code> &middot; <code>GET /api/records</code>
+        &middot; <code>GET /download/csv</code> &middot; <code>GET /download/excel</code>
+      </p>
+    </div>
+  </footer>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script>
+    const fileList = document.getElementById("fileList");
+    const resultsCard = document.getElementById("resultsCard");
+    const resultsTable = document.querySelector("#resultsTable tbody");
+    const rawJson = document.getElementById("rawJson");
+    const toast = document.getElementById("toast");
+
+    function showToast(msg, ok) {
+      toast.textContent = msg;
+      toast.className = "toast " + (ok ? "ok" : "err");
+      toast.hidden = false;
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => (toast.hidden = true), 4000);
+    }
+
+    function refreshFileList() {
+      const names = [];
+      document.querySelectorAll('.dropzone input[type="file"]').forEach((input) => {
+        input.files.forEach((f) => names.push(f.name));
+      });
+      fileList.innerHTML = names
+        .map((n) => `<span class="file-chip">${esc(n)}</span>`)
+        .join(" ");
+    }
+
+    document.querySelectorAll(".dropzone").forEach((dz) => {
+      const input = dz.querySelector("input");
+      dz.addEventListener("click", () => input.click());
+      input.addEventListener("change", refreshFileList);
+      dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("drag"); });
+      dz.addEventListener("dragleave", () => dz.classList.remove("drag"));
+      dz.addEventListener("drop", (e) => {
+        e.preventDefault();
+        dz.classList.remove("drag");
+        input.files = e.dataTransfer.files;
+        refreshFileList();
+      });
+    });
+
+    function renderRecords(records) {
+      resultsTable.innerHTML = "";
+      for (const r of records) {
+        const tr = document.createElement("tr");
+        const fields = Object.entries(r.fields || {})
+          .map(([k, v]) => `<em>${esc(k)}:</em> ${esc(v)}`)
+          .join("<br/>") || "&mdash;";
+        tr.innerHTML = `
+          <td>${esc(r.source_file)}</td>
+          <td>${esc(r.document_type)}</td>
+          <td><strong>${esc(r.name || "—")}</strong></td>
+          <td>${esc(r.date || "—")}</td>
+          <td>${esc(r.date_normalized || "—")}</td>
+          <td>${esc(r.engine)}</td>
+          <td>${r.confidence != null ? r.confidence : "—"}</td>
+          <td class="fields">${fields}</td>`;
+        resultsTable.appendChild(tr);
+      }
+      resultsCard.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      })[c]);
+    }
+
+    document.getElementById("uploadForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const hasFiles = [...document.querySelectorAll('.dropzone input[type="file"]')]
+        .some((i) => i.files.length);
+      if (!hasFiles) {
+        showToast("Please choose at least one file.", false);
+        return;
+      }
+
+      const btn = document.getElementById("extractBtn");
+      const spinner = document.getElementById("spinner");
+      const status = document.getElementById("statusText");
+      btn.disabled = true;
+      spinner.hidden = false;
+      status.textContent = "Extracting...";
+
+      const fd = new FormData(document.getElementById("uploadForm"));
+      try {
+        const resp = await fetch("/api/extract", { method: "POST", body: fd });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) {
+          throw new Error(data.error || `HTTP ${resp.status}`);
+        }
+        renderRecords(data.records);
+        rawJson.textContent = JSON.stringify(data.records, null, 2);
+        resultsCard.hidden = false;
+        status.textContent = data.message;
+        showToast(
+          "Extracted " + data.records.length + " record(s). " +
+          (data.sheets_synced ? "Google Sheet synced." : "Saved to Excel."),
+          true
+        );
+      } catch (err) {
+        showToast("Extraction failed: " + err.message, false);
+        status.textContent = "Failed";
+      } finally {
+        btn.disabled = false;
+        spinner.hidden = true;
+      }
+    });
+
+    document.getElementById("copyJsonBtn").addEventListener("click", async () => {
+      await navigator.clipboard.writeText(rawJson.textContent);
+      showToast("JSON copied to clipboard.", true);
+    });
+  </script>
+</body>
+</html>
